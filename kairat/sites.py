@@ -1,0 +1,163 @@
+"""Универсальный парсер казахстанских сайтов с текстами песен (по конфигу).
+
+    python -m kairat.sites --config sources.json --out data/songs.jsonl
+
+sources.json — список сайтов; селекторы подбираются под вёрстку (DevTools → Copy selector):
+[
+  {
+    "name": "example-site",
+    "start_urls": ["https://example.kz/artist/kairat-nurtas"],   # страницы со списком песен
+    "link_selector": "a.song-link",                              # ссылки на песни
+    "title_selector": "h1",
+    "lyrics_selector": "div.lyrics",
+    "artist_selector": null,                                     # опц.; иначе берётся artist из конфига
+    "artist": "Қайрат Нұртас",
+    "next_selector": "a.next",                                   # опц., пагинация
+    "max_pages": 20
+  }
+]
+Отбираются ТОЛЬКО песни на казахском (kairat.kazakh.is_kazakh). Учитывается robots.txt.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
+import urllib.robotparser
+from typing import Callable, Iterator
+from urllib.parse import urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+from .kazakh import drop_non_kazakh_lines, is_kazakh
+
+UA = "Mozilla/5.0 (compatible; lyrics-dataset-builder/1.0)"
+
+
+def extract_text(node) -> str:
+    for br in node.find_all("br"):
+        br.replace_with("\n")
+    for p in node.find_all(["p", "div"]):
+        p.append("\n")
+    lines = [l.strip() for l in node.get_text().splitlines()]
+    text = "\n".join(lines)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip()
+
+
+def parse_song_page(html: str, cfg: dict, url: str) -> dict | None:
+    soup = BeautifulSoup(html, "html.parser")
+    node = soup.select_one(cfg["lyrics_selector"])
+    if not node:
+        return None
+    title_node = soup.select_one(cfg.get("title_selector", "h1"))
+    artist_node = soup.select_one(cfg["artist_selector"]) if cfg.get("artist_selector") else None
+    lyrics = drop_non_kazakh_lines(extract_text(node))
+    return {
+        "id": "site:" + hashlib.sha1(url.encode()).hexdigest()[:16],
+        "title": title_node.get_text(strip=True) if title_node else None,
+        "artist": artist_node.get_text(strip=True) if artist_node else cfg.get("artist"),
+        "album": None, "release_date": None, "url": url,
+        "language": "kk", "source": cfg["name"], "lyrics": lyrics,
+    }
+
+
+def song_links(html: str, cfg: dict, base: str) -> tuple[list[str], str | None]:
+    soup = BeautifulSoup(html, "html.parser")
+    links = [urljoin(base, a["href"]) for a in soup.select(cfg["link_selector"]) if a.get("href")]
+    nxt = soup.select_one(cfg["next_selector"]) if cfg.get("next_selector") else None
+    return links, (urljoin(base, nxt["href"]) if nxt and nxt.get("href") else None)
+
+
+class Fetcher:
+    def __init__(self, delay: float = 1.5):
+        self.s, self.delay, self._robots = requests.Session(), delay, {}
+        self.s.headers.update({"User-Agent": UA, "Accept-Language": "kk,ru;q=0.5"})
+
+    def allowed(self, url: str) -> bool:
+        host = "{0.scheme}://{0.netloc}".format(urlparse(url))
+        if host not in self._robots:
+            rp = urllib.robotparser.RobotFileParser(host + "/robots.txt")
+            try:
+                rp.read()
+            except Exception:
+                rp = None
+            self._robots[host] = rp
+        rp = self._robots[host]
+        return rp is None or rp.can_fetch(UA, url)
+
+    def get(self, url: str) -> str | None:
+        if not self.allowed(url):
+            print(f"[robots.txt запрещает] {url}", file=sys.stderr)
+            return None
+        for attempt in range(3):
+            try:
+                r = self.s.get(url, timeout=30)
+                if r.status_code in (429, 503):
+                    time.sleep(2 ** attempt * 3)
+                    continue
+                r.raise_for_status()
+                r.encoding = r.apparent_encoding if r.encoding in (None, "ISO-8859-1") else r.encoding
+                time.sleep(self.delay)
+                return r.text
+            except requests.RequestException as e:
+                print(f"[ошибка] {url}: {e}", file=sys.stderr)
+        return None
+
+
+def crawl(cfg: dict, get: Callable[[str], str | None]) -> Iterator[dict]:
+    seen_links: set[str] = set()
+    for start in cfg["start_urls"]:
+        url, pages = start, 0
+        while url and pages < cfg.get("max_pages", 20):
+            html = get(url)
+            if html is None:
+                break
+            links, url_next = song_links(html, cfg, url)
+            for link in links:
+                if link in seen_links:
+                    continue
+                seen_links.add(link)
+                page = get(link)
+                rec = parse_song_page(page, cfg, link) if page else None
+                if not rec or not rec["lyrics"]:
+                    continue
+                if not is_kazakh(rec["lyrics"]):
+                    print(f"[не казахский, пропуск] {rec['title']}", file=sys.stderr)
+                    continue
+                yield rec
+            url, pages = url_next, pages + 1
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--out", default="data/songs.jsonl")
+    ap.add_argument("--delay", type=float, default=1.5)
+    a = ap.parse_args(argv)
+    cfgs = json.load(open(a.config, encoding="utf-8"))
+    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+    seen = set()
+    if os.path.exists(a.out):
+        seen = {json.loads(l)["id"] for l in open(a.out, encoding="utf-8") if l.strip()}
+    fetcher, n = Fetcher(a.delay), 0
+    with open(a.out, "a", encoding="utf-8") as out:
+        for cfg in cfgs:
+            for rec in crawl(cfg, fetcher.get):
+                if rec["id"] in seen:
+                    continue
+                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                out.flush()
+                n += 1
+                print(f"[{n}] {rec['source']}: {rec['title']}", file=sys.stderr)
+    print(f"Готово: +{n} песен → {a.out}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

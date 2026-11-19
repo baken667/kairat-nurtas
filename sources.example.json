@@ -1,0 +1,12 @@
+[
+  {
+    "name": "example-site",
+    "artist": "Қайрат Нұртас",
+    "start_urls": ["https://example.kz/artist/kairat-nurtas"],
+    "link_selector": "a.song-link",
+    "title_selector": "h1",
+    "lyrics_selector": "div.lyrics",
+    "next_selector": "a.next",
+    "max_pages": 20
+  }
+]

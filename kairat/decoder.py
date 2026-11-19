@@ -21,6 +21,8 @@ import sys
 import unicodedata
 from typing import Iterable, Iterator
 
+from .kazakh import is_kazakh
+
 SECTION_RE = re.compile(r"^\s*\[[^\]]*\]\s*$")          # [Куплет 1], [Chorus] ...
 MOJIBAKE_RE = re.compile(r"[ÐÑÃ][\x80-\xbf]")           # «Ð\x9aÐ°...» — UTF-8, прочитанный как latin-1
 
@@ -81,7 +83,8 @@ def convert(rec: dict, fmt: str, keep_tags: bool) -> dict:
     return {**rec, "title": title, "artist": artist, "lyrics": lyr}
 
 
-def decode(records: Iterable[dict], fmt="chat", keep_tags=False, min_chars=50) -> Iterator[dict]:
+def decode(records: Iterable[dict], fmt="chat", keep_tags=False, min_chars=50,
+           kazakh_only=True) -> Iterator[dict]:
     seen = set()
     for rec in records:
         if not rec.get("lyrics"):
@@ -89,6 +92,8 @@ def decode(records: Iterable[dict], fmt="chat", keep_tags=False, min_chars=50) -
         out = convert(rec, fmt, keep_tags)
         body = clean_lyrics(rec["lyrics"], keep_tags)
         if len(body) < min_chars:
+            continue
+        if kazakh_only and not is_kazakh(body):
             continue
         h = hashlib.sha1(re.sub(r"\W+", "", body.casefold()).encode()).hexdigest()
         if h in seen:                       # дубликаты (ремиксы, перепосты)
@@ -104,10 +109,11 @@ def main(argv=None) -> int:
     ap.add_argument("--format", choices=["text", "chat", "alpaca", "raw"], default="chat")
     ap.add_argument("--keep-tags", action="store_true", help="оставить [Куплет]/[Припев]")
     ap.add_argument("--min-chars", type=int, default=50)
+    ap.add_argument("--any-language", action="store_true", help="не отбрасывать не-казахские тексты")
     a = ap.parse_args(argv)
     n = 0
     with open(a.dst, "w", encoding="utf-8") as out:
-        for item in decode(read_jsonl(a.src), a.format, a.keep_tags, a.min_chars):
+        for item in decode(read_jsonl(a.src), a.format, a.keep_tags, a.min_chars, not a.any_language):
             out.write(json.dumps(item, ensure_ascii=False) + "\n")
             n += 1
     print(f"Записано {n} примеров → {a.dst}", file=sys.stderr)
