@@ -11,11 +11,14 @@ sources.json — список сайтов; селекторы подбираю�
     "title_selector": "h1",
     "lyrics_selector": "div.lyrics",
     "artist_selector": null,                                     # опц.; иначе берётся artist из конфига
+    "line_selector": null,                                       # опц.: селектор строки внутри lyrics_selector
+    "max_songs": 0,                                              # опц.: лимит (0 = все)
     "artist": "Қайрат Нұртас",
     "next_selector": "a.next",                                   # опц., пагинация
     "max_pages": 20
   }
 ]
+Для matinder.kz готовый конфиг — sources.json.
 Отбираются ТОЛЬКО песни на казахском (kairat.kazakh.is_kazakh). Учитывается robots.txt.
 """
 from __future__ import annotations
@@ -38,7 +41,10 @@ from .kazakh import drop_non_kazakh_lines, is_kazakh
 UA = "Mozilla/5.0 (compatible; lyrics-dataset-builder/1.0)"
 
 
-def extract_text(node) -> str:
+def extract_text(node, line_selector: str | None = None) -> str:
+    if line_selector:  # каждая строка песни — отдельный элемент, пустой элемент = конец куплета
+        lines = [" ".join(el.get_text().split()) for el in node.select(line_selector)]
+        return "\n".join(lines).strip().replace("\n\n\n", "\n\n")
     for br in node.find_all("br"):
         br.replace_with("\n")
     for p in node.find_all(["p", "div"]):
@@ -57,7 +63,7 @@ def parse_song_page(html: str, cfg: dict, url: str) -> dict | None:
         return None
     title_node = soup.select_one(cfg.get("title_selector", "h1"))
     artist_node = soup.select_one(cfg["artist_selector"]) if cfg.get("artist_selector") else None
-    lyrics = drop_non_kazakh_lines(extract_text(node))
+    lyrics = drop_non_kazakh_lines(extract_text(node, cfg.get("line_selector")))
     return {
         "id": "site:" + hashlib.sha1(url.encode()).hexdigest()[:16],
         "title": title_node.get_text(strip=True) if title_node else None,
@@ -112,6 +118,7 @@ class Fetcher:
 
 def crawl(cfg: dict, get: Callable[[str], str | None]) -> Iterator[dict]:
     seen_links: set[str] = set()
+    produced = 0
     for start in cfg["start_urls"]:
         url, pages = start, 0
         while url and pages < cfg.get("max_pages", 20):
@@ -131,6 +138,9 @@ def crawl(cfg: dict, get: Callable[[str], str | None]) -> Iterator[dict]:
                     print(f"[не казахский, пропуск] {rec['title']}", file=sys.stderr)
                     continue
                 yield rec
+                produced += 1
+                if cfg.get("max_songs") and produced >= cfg["max_songs"]:
+                    return
             url, pages = url_next, pages + 1
 
 
@@ -139,8 +149,12 @@ def main(argv=None) -> int:
     ap.add_argument("--config", required=True)
     ap.add_argument("--out", default="data/songs.jsonl")
     ap.add_argument("--delay", type=float, default=1.5)
+    ap.add_argument("--limit", type=int, default=0, help="макс. песен на сайт (0 = все)")
     a = ap.parse_args(argv)
     cfgs = json.load(open(a.config, encoding="utf-8"))
+    if a.limit:
+        for c in cfgs:
+            c["max_songs"] = a.limit
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     seen = set()
     if os.path.exists(a.out):

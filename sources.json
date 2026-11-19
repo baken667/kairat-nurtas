@@ -1,0 +1,13 @@
+[
+  {
+    "name": "matinder.kz",
+    "artist": "Қайрат Нұртас",
+    "start_urls": ["https://matinder.kz/artist/kayrat-nurtas"],
+    "link_selector": "a.title",
+    "title_selector": "h1.song--info__title",
+    "artist_selector": "h2.song--info__artists",
+    "lyrics_selector": "div.song--lyrics__content",
+    "line_selector": "div",
+    "max_pages": 1
+  }
+]
