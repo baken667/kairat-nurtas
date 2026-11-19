@@ -59,3 +59,15 @@ def test_crawl_site():
     }
     got = list(crawl(cfg, pages.get))
     assert [r["title"] for r in got] == ["Бір", "Үш"] and got[0]["artist"] == "К"
+
+
+def test_link_filter_and_title_split():
+    cfg = {"name": "t", "start_urls": ["http://x/l"], "link_selector": "a.s", "link_filter": "Қайрат",
+           "title_selector": "h1", "title_split": " - ", "lyrics_selector": "font"}
+    pages = {
+        "http://x/l": '<a class="s" href="/1">Қайрат Нұртас - Ән</a><a class="s" href="/2">Басқа - Ән</a>',
+        "http://x/1": "<h1>Қайрат Нұртас - Ән <small>әнінің сөздері</small></h1><font>" + KK.replace("\n", "<br>") + "</font>",
+        "http://x/2": "<h1>Басқа - Ән</h1><font>" + KK.replace("\n", "<br>") + "</font>",
+    }
+    got = list(crawl(cfg, pages.get))
+    assert len(got) == 1 and got[0]["artist"] == "Қайрат Нұртас" and got[0]["title"] == "Ән"

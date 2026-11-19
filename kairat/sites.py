@@ -12,6 +12,8 @@ sources.json — список сайтов; селекторы подбираю�
     "lyrics_selector": "div.lyrics",
     "artist_selector": null,                                     # опц.; иначе берётся artist из конфига
     "line_selector": null,                                       # опц.: селектор строки внутри lyrics_selector
+    "link_filter": null,                                         # опц.: regex по тексту ссылки (фильтр по исполнителю)
+    "title_split": null,                                         # опц.: напр. " - " для заголовков «Исполнитель - Песня»
     "max_songs": 0,                                              # опц.: лимит (0 = все)
     "artist": "Қайрат Нұртас",
     "next_selector": "a.next",                                   # опц., пагинация
@@ -27,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.robotparser
@@ -64,10 +67,18 @@ def parse_song_page(html: str, cfg: dict, url: str) -> dict | None:
     title_node = soup.select_one(cfg.get("title_selector", "h1"))
     artist_node = soup.select_one(cfg["artist_selector"]) if cfg.get("artist_selector") else None
     lyrics = drop_non_kazakh_lines(extract_text(node, cfg.get("line_selector")))
+    title = None
+    if title_node:
+        for small in title_node.find_all("small"):
+            small.decompose()
+        title = title_node.get_text(" ", strip=True)
+    artist = artist_node.get_text(strip=True) if artist_node else cfg.get("artist")
+    if title and cfg.get("title_split") and cfg["title_split"] in title:
+        artist, title = (x.strip() for x in title.split(cfg["title_split"], 1))
     return {
         "id": "site:" + hashlib.sha1(url.encode()).hexdigest()[:16],
-        "title": title_node.get_text(strip=True) if title_node else None,
-        "artist": artist_node.get_text(strip=True) if artist_node else cfg.get("artist"),
+        "title": title,
+        "artist": artist,
         "album": None, "release_date": None, "url": url,
         "language": "kk", "source": cfg["name"], "lyrics": lyrics,
     }
@@ -75,7 +86,9 @@ def parse_song_page(html: str, cfg: dict, url: str) -> dict | None:
 
 def song_links(html: str, cfg: dict, base: str) -> tuple[list[str], str | None]:
     soup = BeautifulSoup(html, "html.parser")
-    links = [urljoin(base, a["href"]) for a in soup.select(cfg["link_selector"]) if a.get("href")]
+    flt = re.compile(cfg["link_filter"], re.I) if cfg.get("link_filter") else None
+    links = [urljoin(base, a["href"]) for a in soup.select(cfg["link_selector"])
+             if a.get("href") and (not flt or flt.search(a.get_text(" ", strip=True)))]
     nxt = soup.select_one(cfg["next_selector"]) if cfg.get("next_selector") else None
     return links, (urljoin(base, nxt["href"]) if nxt and nxt.get("href") else None)
 
@@ -88,10 +101,14 @@ class Fetcher:
     def allowed(self, url: str) -> bool:
         host = "{0.scheme}://{0.netloc}".format(urlparse(url))
         if host not in self._robots:
-            rp = urllib.robotparser.RobotFileParser(host + "/robots.txt")
-            try:
-                rp.read()
-            except Exception:
+            rp = urllib.robotparser.RobotFileParser()
+            try:  # качаем тем же клиентом/UA: urllib по умолчанию часто получает 403 и считает это полным запретом
+                r = self.s.get(host + "/robots.txt", timeout=15)
+                if r.status_code == 200:
+                    rp.parse(r.text.splitlines())
+                else:  # нет robots.txt (404 и т.п.) → ограничений нет
+                    rp = None
+            except requests.RequestException:
                 rp = None
             self._robots[host] = rp
         rp = self._robots[host]
@@ -120,8 +137,9 @@ def crawl(cfg: dict, get: Callable[[str], str | None]) -> Iterator[dict]:
     seen_links: set[str] = set()
     produced = 0
     for start in cfg["start_urls"]:
-        url, pages = start, 0
-        while url and pages < cfg.get("max_pages", 20):
+        url, pages, visited = start, 0, set()
+        while url and url not in visited and pages < cfg.get("max_pages", 20):
+            visited.add(url)
             html = get(url)
             if html is None:
                 break

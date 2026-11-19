@@ -2,12 +2,28 @@
   {
     "name": "matinder.kz",
     "artist": "Қайрат Нұртас",
-    "start_urls": ["https://matinder.kz/artist/kayrat-nurtas"],
+    "start_urls": [
+      "https://matinder.kz/artist/kayrat-nurtas"
+    ],
     "link_selector": "a.title",
     "title_selector": "h1.song--info__title",
     "artist_selector": "h2.song--info__artists",
     "lyrics_selector": "div.song--lyrics__content",
     "line_selector": "div",
     "max_pages": 1
+  },
+  {
+    "name": "saz-alemi.kz",
+    "artist": "Қайрат Нұртас",
+    "start_urls": [
+      "https://www.saz-alemi.kz/text/"
+    ],
+    "link_selector": "a[href*='-1-0-']",
+    "link_filter": "Қайрат\\s+Нұртас|Кайрат\\s+Нуртас|Kairat\\s+Nurtas|Kayrat\\s+Nurtas",
+    "next_selector": "a:-soup-contains('»')",
+    "title_selector": "div.panel-body h1",
+    "title_split": " - ",
+    "lyrics_selector": "div.panel-body > font",
+    "max_pages": 30
   }
 ]
